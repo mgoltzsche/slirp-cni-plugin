@@ -12,10 +12,10 @@ type UserNS struct {
 }
 
 func Current() (*UserNS, error) {
-	return OpenUserNS(os.Getpid())
+	return GetUserNS(os.Getpid())
 }
 
-func OpenUserNS(pid int) (*UserNS, error) {
+func GetUserNS(pid int) (*UserNS, error) {
 	file, err := os.Open(fmt.Sprintf("/proc/%d/ns/user", pid))
 	if err != nil {
 		return nil, fmt.Errorf("open userns of pid %d: %v", pid, err)
@@ -25,7 +25,7 @@ func OpenUserNS(pid int) (*UserNS, error) {
 
 func (ns *UserNS) Set() (err error) {
 	if err = unix.Setns(int(ns.file.Fd()), unix.CLONE_NEWUSER); err != nil {
-		err = fmt.Errorf("Error switching to userns %v: %v", ns.file.Name(), err)
+		err = fmt.Errorf("Error switching to userns %v (%d): %v", ns.file.Name(), int(ns.file.Fd()), err)
 	}
 	return
 }
