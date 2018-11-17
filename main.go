@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -12,84 +11,116 @@ import (
 	"github.com/containernetworking/cni/pkg/types"
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/cni/pkg/version"
-	"github.com/containernetworking/plugins/pkg/ip"
-	"github.com/containernetworking/plugins/pkg/ipam"
-	"github.com/containernetworking/plugins/pkg/ns"
-	"github.com/vishvananda/netlink"
 )
 
-type NetConf struct {
+type netConf struct {
 	types.NetConf
 	MTU int
 }
 
 func cmdAdd(args *skel.CmdArgs) (err error) {
-	conf := NetConf{}
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("add slirp %s: %v", args.IfName, err)
+		}
+	}()
+
+	conf := netConf{}
 	if err := json.Unmarshal(args.StdinData, &conf); err != nil {
 		return fmt.Errorf("failed to load netconf: %v", err)
 	}
-	pid, err := getPID(args.Netns)
+
+	if conf.IPAM.Type != "" {
+		return fmt.Errorf("ipam plugin not supported within slirp")
+	}
+
+	if conf.MTU <= 0 {
+		conf.MTU = 1500 // default
+	}
+	if conf.MTU > 65521 || conf.MTU < 1500 {
+		return fmt.Errorf("invalid MTU value %d configured. 1500 <= MTU <= 65521", conf.MTU)
+	}
+
+	containerPID, err := pidFromNetns(args.Netns)
 	if err != nil {
 		return
 	}
 
-	// run the IPAM plugin and get back the config to apply
-	r, err := ipam.ExecAdd(conf.IPAM.Type, args.StdinData)
+	pidFile := slirpPIDFile(args.ContainerID, args.IfName)
+	slirpPID, err := getSlirpPID(pidFile)
 	if err != nil {
-		return fmt.Errorf("reserve IP: %v", err)
+		return
+	}
+	if slirpPID > 0 {
+		return fmt.Errorf("a slirp4netns process (%d) is already running for netns (containerID: %s, PID: %d)", slirpPID, args.ContainerID, containerPID)
 	}
 
-	// Convert whatever the IPAM result was into the current Result type
-	result, err := current.NewResultFromResult(r)
+	slirpPID, err = startSlirp(containerPID, args.IfName, conf.MTU)
 	if err != nil {
-		return err
+		return
+	}
+	if err = writeSlirpPIDFile(pidFile, slirpPID); err != nil {
+		stopSlirp(slirpPID)
+		return
 	}
 
-	if len(result.IPs) == 0 {
-		return errors.New("IPAM plugin returned no IP")
+	// See https://github.com/rootless-containers/slirp4netns/blob/master/slirp4netns.1.md#description
+	r := current.Result{
+		CNIVersion: current.ImplementedSpecVersion,
+		Interfaces: []*current.Interface{{
+			Name:    args.IfName,
+			Sandbox: args.Netns,
+		}},
+		IPs: []*current.IPConfig{{
+			Version:   "4",
+			Interface: current.Int(0),
+			Address: net.IPNet{
+				IP:   net.ParseIP("10.0.2.100"),
+				Mask: net.IPv4Mask(255, 255, 255, 0),
+			},
+			Gateway: net.ParseIP("10.0.2.2"),
+		}},
+		Routes: []*types.Route{{
+			Dst: net.IPNet{
+				IP:   net.ParseIP("0.0.0.0"),
+				Mask: net.IPv4Mask(0, 0, 0, 0),
+			},
+			GW: net.ParseIP("10.0.2.2"),
+		}},
+		DNS: conf.DNS,
 	}
+	r.DNS.Nameservers = append(r.DNS.Nameservers, "10.0.2.3")
 
-	result.DNS = conf.DNS
-	return spawnChild(&childConf{
-		PID:    pid,
-		IfName: args.IfName,
-		MTU:    conf.MTU,
-		Result: result,
-	})
+	if err = types.PrintResult(&r, conf.CNIVersion); err != nil {
+		stopSlirp(slirpPID)
+		return fmt.Errorf("error printing slirp result")
+	}
+	return
 }
 
-func cmdDel(args *skel.CmdArgs) error {
-	// TODO: impl
-	conf := NetConf{}
-	if err := json.Unmarshal(args.StdinData, &conf); err != nil {
+func cmdDel(args *skel.CmdArgs) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("del slirp %s: %v", args.IfName, err)
+		}
+	}()
+
+	conf := netConf{}
+	if err = json.Unmarshal(args.StdinData, &conf); err != nil {
 		return fmt.Errorf("failed to load netconf: %v", err)
 	}
-
-	if err := ipam.ExecDel(conf.IPAM.Type, args.StdinData); err != nil {
-		return err
+	pidFile := slirpPIDFile(args.ContainerID, args.IfName)
+	slirpPID, err := getSlirpPID(pidFile)
+	if err != nil || slirpPID == 0 {
+		return
 	}
-
-	if args.Netns == "" {
-		return nil
+	if err = stopSlirp(slirpPID); err != nil {
+		return
 	}
-
-	// There is a netns so try to clean up. Delete can be called multiple times
-	// so don't return an error if the device is already removed.
-	// If the device isn't there then don't try to clean up IP masq either.
-	var ipn *net.IPNet
-	err := ns.WithNetNSPath(args.Netns, func(_ ns.NetNS) error {
-		var err error
-		ipn, err = ip.DelLinkByNameAddr(args.IfName, netlink.FAMILY_V4)
-		if err != nil && err == ip.ErrLinkNotFound {
-			return nil
-		}
-		return err
-	})
-
-	return err
+	return deleteSlirpPIDFile(pidFile)
 }
 
-func getPID(netnsPath string) (pid int, err error) {
+func pidFromNetns(netnsPath string) (pid int, err error) {
 	regex := regexp.MustCompile("^/proc/([0-9]+)/ns/net$")
 	matches := regex.FindStringSubmatch(netnsPath)
 	if len(matches) != 2 {

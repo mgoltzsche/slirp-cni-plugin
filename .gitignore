@@ -1,6 +1,4 @@
 build/
-dist/
 vendor/
-.cni/
-slirp
 slirp-cni-plugin
+slirp

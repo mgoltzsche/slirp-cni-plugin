@@ -1,77 +1,78 @@
+SLIRP4NETNS_VERSION?=e5c7f16a3f866b2def1cc4d20587553342f6f6eb
+CNI_VERSION?=0.6.0
+BUILDTAGS?=linux static_build
+LDFLAGS?=-extldflags '-static'
+CGO_ENABLED?=0
+GOOS?=linux
+
 BUILDIMAGE=local/slirp-cni-plugin-build:latest
 LITEIDEIMAGE=local/slirp-cni-plugin-build:liteide
 DOCKER=docker
 USER=$(shell [ '${DOCKER}' = docker ] && id -u || echo 0)
-DOCKERRUN=${DOCKER} run --name slirp-cni-plugin-build --rm -v "${REPODIR}:/work" -w /work
+DOCKERRUN=${DOCKER} run --name slirp-cni-plugin-build --rm -e CGO_ENABLED=${CGO_ENABLED} -e GOOS=${GOOS} -e GOPATH=/work/build -v "${REPODIR}:/work" -w /work
 
 REPODIR=$(shell pwd)
 GOPATH=${REPODIR}/build
+CNIGOPATH=${GOPATH}/cni
 LITEIDE_WORKSPACE=${GOPATH}/liteide-workspace
 PKGNAME=github.com/mgoltzsche/slirp-cni-plugin
 PKGRELATIVEROOT=$(shell echo /src/${PKGNAME} | sed -E 's/\/+[^\/]*/..\//g')
-VENDORLOCK=${REPODIR}/vendor/ready
-BINARY=dist/cni-plugins/slirp
 
-COMMIT_ID=$(shell git rev-parse HEAD)
-COMMIT_TAG=$(shell git describe --exact-match ${COMMIT_ID} || echo -n "dev")
-COMMIT_DATE=$(shell git show -s --format=%ci ${COMMIT_ID})
+all: slirp
 
-BUILDTAGS_STATIC=${BUILDTAGS} linux static_build
-LDFLAGS+=-X main.commit=${COMMIT_ID} -X main.version=${COMMIT_TAG} -X 'main.date=${COMMIT_DATE}'
-LDFLAGS_STATIC=${LDFLAGS} -extldflags '-static'
+slirp: .buildimage
+	${DOCKERRUN} -u ${USER}:${USER} ${BUILDIMAGE} make .slirp
 
-PACKAGES:=$(shell go list $(BUILDFLAGS) . | grep -v github.com/mgoltzsche/slirp-cni-plugin/vendor)
-CNI_VERSION?=0.6.0
-CNIGOPATH=${GOPATH}/cni
+.slirp: vendor
+	# Building slirp plugin:
+	export GOPATH="${GOPATH}" && \
+	go build -o slirp -a -ldflags "${LDFLAGS}" -tags "${BUILDTAGS}" "${PKGNAME}"
 
-all: slirp-static
+test: vendor
+	# Run unit tests:
+	export GOPATH="${GOPATH}" && \
+	go test ${PKGNAME}
 
-slirp-static: .buildimage
-	${DOCKERRUN} -u ${USER}:${USER} ${BUILDIMAGE} make slirp BUILDTAGS="${BUILDTAGS_STATIC}" LDFLAGS="${LDFLAGS_STATIC}"
+integration-test: slirp cnitool slirp4netns
+	# Run integration test:
+	sh integration-test/test.sh
 
-slirp: vendor
-	# Building application:
-	GOPATH="${GOPATH}" \
-	go build -o ${BINARY} -a -ldflags "${LDFLAGS}" -tags "${BUILDTAGS}" "${PKGNAME}"
+lint: .workspace
+	export GOPATH="${GOPATH}"; \
+	go get golang.org/x/lint/golint && \
+	"${GOPATH}/bin/golint" ${PKGNAME}
 
 fmt:
 	# Format the go code
-	(find . -mindepth 1 -maxdepth 1 -type d; ls *.go) | grep -Ev '^(./vendor|./dist|./build|./.git)(/.*)?$$' | xargs -n1 gofmt -w
+	(find . -mindepth 1 -maxdepth 1 -type d; ls *.go) | grep -Ev '^(./vendor|./build|./.git)(/.*)?$$' | xargs -n1 gofmt -w
 
-lint:
+validate:
 	export GOPATH="${GOPATH}"; \
-	go get golang.org/x/lint/golint && \
-	"${GOPATH}/bin/golint" $(shell export GOPATH="${GOPATH}"; cd "${GOPATH}/src/${PKGNAME}" && go list -tags "${BUILDTAGS_STATIC}" ./... 2>/dev/null | grep -Ev '/vendor/|^${PKGNAME}/build/')
+	go get github.com/vbatts/git-validation
+	"${GOPATH}/bin/git-validation" -run DCO,short-subject
 
-cni-tool:
-	ctnr image build --verbose --dockerfile Dockerfile --build-arg CNI_VERSION=v${CNI_VERSION} --target cni-tool --tag local/cni-tool
-	ctnr bundle create -b "${GOPATH}/cni-tool-bundle" --update local/cni-tool
-	mkdir -p "${REPODIR}/dist/bin"
-	cp -f "${GOPATH}/cni-tool-bundle/rootfs/cni-tool" "${REPODIR}/dist/bin/cni-tool"
+check:
+	${DOCKERRUN} -u ${USER}:${USER} ${BUILDIMAGE} make validate lint test
+	make slirp
+	make integration-test
+	# Test slirp binary
+	./slirp || ([ $$? -eq 1 ] && echo slirp binary exists and is runnable)
 
-cni-plugins-static: .buildimage
-	${DOCKERRUN} ${BUILDIMAGE} make cni-plugins LDFLAGS="${LDFLAGS_STATIC}"
+slirp4netns:
+	ctnr image build --verbose --dockerfile Dockerfile --build-arg SLIRP4NETNS_VERSION=${SLIRP4NETNS_VERSION} --target slirp4netns --tag local/slirp4netns
+	ctnr bundle create -b "${GOPATH}/slirp4netns-bundle" --update local/slirp4netns
+	mkdir -p "${REPODIR}/build/bin"
+	cp -f "${GOPATH}/slirp4netns-bundle/rootfs/slirp4netns/slirp4netns" "${REPODIR}/build/bin/slirp4netns"
 
-cni-plugins:
-	mkdir -p "${CNIGOPATH}"
-	wget -O "${CNIGOPATH}/cni-${CNI_VERSION}.tar.gz" "https://github.com/containernetworking/cni/archive/v${CNI_VERSION}.tar.gz"
-	wget -O "${CNIGOPATH}/cni-plugins-${CNI_VERSION}.tar.gz" "https://github.com/containernetworking/plugins/archive/v${CNI_VERSION}.tar.gz"
-	tar -xzf "${CNIGOPATH}/cni-${CNI_VERSION}.tar.gz" -C "${CNIGOPATH}"
-	tar -xzf "${CNIGOPATH}/cni-plugins-${CNI_VERSION}.tar.gz" -C "${CNIGOPATH}"
-	rm -rf "${CNIGOPATH}/src/github.com/containernetworking"
-	mkdir -p "${CNIGOPATH}/src/github.com/containernetworking"
-	mv "${CNIGOPATH}/cni-${CNI_VERSION}"     "${CNIGOPATH}/src/github.com/containernetworking/cni"
-	mv "${CNIGOPATH}/plugins-${CNI_VERSION}" "${CNIGOPATH}/src/github.com/containernetworking/plugins"
-	export GOPATH="${CNIGOPATH}" && \
-	for TYPE in main ipam meta; do \
-		for CNIPLUGIN in `ls ${CNIGOPATH}/src/github.com/containernetworking/plugins/plugins/$$TYPE`; do \
-			(set -x; go build -o dist/cni-plugins/$$CNIPLUGIN -a -ldflags "${LDFLAGS}" github.com/containernetworking/plugins/plugins/$$TYPE/$$CNIPLUGIN) || exit 1; \
-		done \
-	done
+cnitool: vendor
+	ctnr image build --verbose --dockerfile Dockerfile --target cnitool --tag local/cnitool
+	ctnr bundle create -b "${GOPATH}/cnitool-bundle" --update local/cnitool
+	mkdir -p "${REPODIR}/build/bin"
+	cp -f "${GOPATH}/cnitool-bundle/rootfs/cnitool" "${REPODIR}/build/bin/cnitool"
 
 .buildimage:
 	# Building build image:
-	${DOCKER} build -f Dockerfile --target slirp-cni-plugin-build -t ${BUILDIMAGE} .
+	${DOCKER} build -f Dockerfile --target build-base -t ${BUILDIMAGE} .
 
 build-sh: .buildimage
 	# Running dockerized interactive build shell
@@ -88,17 +89,17 @@ ifeq ($(shell [ ! -d vendor -o "${UPDATE_VENDOR}" = TRUE ] && echo 0),0)
 	rm -rf vendor
 	mv "${GOPATH}/vndrtmp/vendor" vendor
 else
-	# Skipping dependency update
+	# Skipping vendor update
 endif
 
-update-vendor:
+vendor-update:
 	# Update vendor directory
 	@make vendor UPDATE_VENDOR=TRUE
 	# In case LiteIDE is running it must be restarted to apply the changes
 
 .workspace:
 	# Preparing build directory:
-	[ -d "${GOPATH}" ] || \
+	[ -d "${GOPATH}/src" ] || \
 		(mkdir -p vendor "$(shell dirname "${GOPATH}/src/${PKGNAME}")" \
 		&& ln -sf "${PKGRELATIVEROOT}" "${GOPATH}/src/${PKGNAME}")
 
@@ -139,4 +140,4 @@ ide: .liteideimage
 	ctnr image build --dockerfile=Dockerfile --target=liteide --tag=${LITEIDEIMAGE}
 
 clean:
-	rm -rf ./build ./dist ./slirp
+	rm -rf ./build ./slirp ./slirp-cni-plugin
