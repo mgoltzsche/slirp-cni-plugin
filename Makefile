@@ -33,9 +33,9 @@ test: vendor
 	export GOPATH="${GOPATH}" && \
 	go test ${PKGNAME}
 
-integration-test: slirp cnitool slirp4netns
+test-integration: cnitool slirp4netns
 	# Run integration test:
-	sh integration-test/test.sh
+	${DOCKERRUN} --privileged -u ${USER}:${USER} ${BUILDIMAGE} ./integration-test/test.sh
 
 lint: .workspace
 	export GOPATH="${GOPATH}"; \
@@ -51,28 +51,27 @@ validate:
 	go get github.com/vbatts/git-validation
 	"${GOPATH}/bin/git-validation" -run DCO,short-subject
 
-check:
+check: .buildimage
 	${DOCKERRUN} -u ${USER}:${USER} ${BUILDIMAGE} make validate lint test
-	make slirp
-	make integration-test
+	make slirp test-integration
 	# Test slirp binary
 	./slirp || ([ $$? -eq 1 ] && echo slirp binary exists and is runnable)
 
 slirp4netns:
-	ctnr image build --verbose --dockerfile Dockerfile --build-arg SLIRP4NETNS_VERSION=${SLIRP4NETNS_VERSION} --target slirp4netns --tag local/slirp4netns
-	ctnr bundle create -b "${GOPATH}/slirp4netns-bundle" --update local/slirp4netns
-	mkdir -p "${REPODIR}/build/bin"
-	cp -f "${GOPATH}/slirp4netns-bundle/rootfs/slirp4netns/slirp4netns" "${REPODIR}/build/bin/slirp4netns"
+	docker image build --force-rm -f Dockerfile --build-arg SLIRP4NETNS_VERSION=${SLIRP4NETNS_VERSION} --target slirp4netns --tag local/slirp4netns .
+	id=$$(docker create local/slirp4netns) && \
+	docker cp $$id:/slirp4netns/slirp4netns build/bin/slirp4netns && \
+	docker rm -v $$id
 
 cnitool: vendor
-	ctnr image build --verbose --dockerfile Dockerfile --target cnitool --tag local/cnitool
-	ctnr bundle create -b "${GOPATH}/cnitool-bundle" --update local/cnitool
-	mkdir -p "${REPODIR}/build/bin"
-	cp -f "${GOPATH}/cnitool-bundle/rootfs/cnitool" "${REPODIR}/build/bin/cnitool"
+	docker image build --force-rm -f Dockerfile --build-arg SLIRP4NETNS_VERSION=${SLIRP4NETNS_VERSION} --target cnitool --tag local/cnitool .
+	id=$$(docker create local/cnitool) && \
+	docker cp $$id:/cnitool build/bin/cnitool && \
+	docker rm -v $$id
 
 .buildimage:
 	# Building build image:
-	${DOCKER} build -f Dockerfile --target build-base -t ${BUILDIMAGE} .
+	${DOCKER} build --force-rm -f Dockerfile --target build-base -t ${BUILDIMAGE} .
 
 build-sh: .buildimage
 	# Running dockerized interactive build shell
@@ -99,7 +98,7 @@ vendor-update:
 
 .workspace:
 	# Preparing build directory:
-	[ -d "${GOPATH}/src" ] || \
+	[ -d "${GOPATH}/src/${PKGNAME}" ] || \
 		(mkdir -p vendor "$(shell dirname "${GOPATH}/src/${PKGNAME}")" \
 		&& ln -sf "${PKGRELATIVEROOT}" "${GOPATH}/src/${PKGNAME}")
 

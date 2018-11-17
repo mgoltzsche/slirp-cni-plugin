@@ -14,30 +14,30 @@ mkfifo hpipe || (rm -rf "$TMPDIR"; false) || exit 1
 
 # Create user/net/mount namespaces
 unshare --user --map-root-user --net --mount sh -c "
-	timeout 1s echo '=> netns is ready' > cpipe &&
-	timeout 3s cat hpipe &&
+	timeout -t1 echo '=> netns is ready' > cpipe &&
+	timeout -t3 cat hpipe &&
 	ip addr show eth0 &&
 	wget --spider http://example.org &&
-	timeout 1s echo '=> connectivity verified' > cpipe &&
-	timeout 3s cat hpipe &&
+	timeout -t1 echo '=> connectivity verified' > cpipe &&
+	timeout -t3 cat hpipe &&
 	(! ip addr show eth0) &&
-	timeout 1s echo '=> iface deletion verified' > cpipe &&
-	timeout 3s cat hpipe &&
+	timeout -t1 echo '=> iface deletion verified' > cpipe &&
+	timeout -t3 cat hpipe &&
 	wget --spider http://example.org
 " &
 PID=$!
 NETNS=/proc/$PID/ns/net
 
 # Add interface to netns
-timeout 3s cat cpipe &&
+timeout -t3 cat cpipe &&
 cnitool add slirp $NETNS &&
 echo '=> iface initialized' > hpipe &&
-timeout 3s cat cpipe &&
+timeout -t3 cat cpipe &&
 
 # Remove interface from netns
 cnitool del slirp $NETNS &&
 echo '=> iface deleted' > hpipe &&
-timeout 3s cat cpipe &&
+timeout -t3 cat cpipe &&
 
 # Add interface again
 cnitool add slirp $NETNS &&

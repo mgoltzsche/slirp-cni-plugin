@@ -1,0 +1,17 @@
+sudo: required
+
+services:
+- docker
+
+script:
+- make check
+
+deploy:
+  provider: releases
+  api_key:
+    secure: j3ubi4jVqhjJkSaA1z869n45KA78Qj90+V4JJlZ46rGERalDoKLl6guRVQgXX38oc/pKySi54RHZc9zDMwbf9qPm2zCfOkdbGA7gXpCH+S3yrMddPfrbtPnTrwtw4YeQ+5yt8sZngi3pHWukwnV5ZSKqXBlSo7jfRF3PVa5ZQCOeK4GmLaady7iT/20Iuiyqhii0DlH2zFdDBgBq0sJBzKRx/2UlaMa5NZjTwtN37IIZNItm5XrcAWYAvSNw4FFIMeAlfCnRffeMKxQ6urGM0aTtaTHHl00wBIiK7lsPZbiOvQyNFx5FLcGajUsKGH10LWgjSvgwlgImBlWfPhL+4ff03mBgGZYWJC/0kNNMvXtbNFXoImRTKheJjxWhJjcOEQzoaDfgs4USp1d+fl/xJ69fXL4hiUPq/qcw8pXfZh5NL28SWL9noQYQfM/XkdsQ+ElvAvJHzctzpNlc5lFjtFRLySk4/05NuxAG/3gI9eHhgLRWJcAZuis2n2Y8GcgDMt4AxHeRnBKnSXFh6SrUnecrO4EThUznngD2BPvIYkgubxIuglV6i8A5nAdb2rcakjTZ9tfSoXPlL4BKDbti/ir5M8sIg0yQOl9pHbDY2BehATbVsoabzVHEvPT30wxA/nNckbbs6I5ZKakh9pBodozDeGPNFOhn6vTkTMuUp1A=
+  file: slirp
+  skip_cleanup: true
+  on:
+    repo: mgoltzsche/slirp-cni-plugin
+    tags: true

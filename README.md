@@ -1,4 +1,6 @@
-# slirp-cni-plugin
+slirp-cni-plugin [![Build Status](https://travis-ci.org/mgoltzsche/slirp-cni-plugin.svg?branch=master)](https://travis-ci.org/mgoltzsche/slirp-cni-plugin)
+=
+
 A [CNI](https://github.com/containernetworking/cni) plugin that provides
 container networking for unprivileged users ("slirp") using [slirp4netns](https://github.com/rootless-containers/slirp4netns).  
 
@@ -22,7 +24,7 @@ make slirp4netns cnitool
 ## Plugin configuration
 
 ### JSON configuration file
-An example configuration file can be found [here](example/conf/10-slirp.json).
+An example configuration file can be found [here](example-conf/10-slirp.json).
 
 | Field  | Default | Description |
 | ------ | ------- | ----------- |
@@ -41,7 +43,7 @@ Otherwise the plugin will lookup slirp4netns in the `PATH`.
 
 
 ## Usage
-This example shows how to create namespaces and add a [slirp network](example/conf/10-slirp.json)
+This example shows how to create namespaces and add a [slirp network](example-conf/10-slirp.json)
 using [cnitool](https://github.com/containernetworking/cni/tree/master/cnitool).
 Please note that the [slirp4netns](https://github.com/rootless-containers/slirp4netns)
 binary must be in the `PATH` or specified in the `SLIRP4NETNS` environment variable.  
